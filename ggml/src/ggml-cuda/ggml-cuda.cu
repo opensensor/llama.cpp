@@ -63,6 +63,7 @@
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
+#include "ggml-cuda/fattn-gdn.cuh"
 #include "ggml.h"
 
 #include <algorithm>

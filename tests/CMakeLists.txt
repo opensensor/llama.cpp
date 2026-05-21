@@ -308,3 +308,19 @@ if (TARGET gguf-model-data)
     target_link_libraries(export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+# Flash attention for gated delta net tests
+if (GGML_CUDA)
+    llama_build(test-fattn-gdn.cpp)
+    target_link_libraries(test-fattn-gdn PRIVATE llama ggml-cuda)
+    llama_test(test-fattn-gdn LABEL "cuda" NAME test-fattn-gdn)
+endif()
+
+# Python integration test
+add_test(NAME test-fattn-gdn-py
+    COMMAND ${CMAKE_COMMAND} -E env
+        PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/test-fattn-gdn.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+set_tests_properties(test-fattn-gdn-py PROPERTIES LABELS "python;cuda")

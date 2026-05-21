@@ -1,5 +1,6 @@
 #include "gated_delta_net.cuh"
 #include "ggml-cuda/common.cuh"
+#include "fattn-gdn.cuh"
 
 template <int S_v, bool KDA, bool keep_rs_t>
 __global__ void __launch_bounds__((ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v) * 4, 2)
@@ -290,25 +291,37 @@ void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor *
     const int K = (int) src_state->ne[1];
     const bool keep_rs = K > 1;
 
-    if (kda) {
-        if (keep_rs) {
-            launch_gated_delta_net<true, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
-                S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
-        } else {
-            launch_gated_delta_net<true, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
-                S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
-        }
+    // Use flash attention for larger sequences (better performance)
+    // Use standard kernel for smaller sequences or when K > 1 (state retention)
+    const bool use_fattn = (n_tokens > 32 && !keep_rs);
+
+    if (use_fattn) {
+        // Flash attention implementation for gated delta net
+        ggml_cuda_fattn_gdn_impl<kda, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+            S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+            sb1, sb2, sb3, neqk1, rq3, K, stream);
     } else {
-        if (keep_rs) {
-            launch_gated_delta_net<false, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
-                S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
+        // Standard gated delta net implementation (for state retention or small sequences)
+        if (kda) {
+            if (keep_rs) {
+                launch_gated_delta_net<true, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+                    S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
+            } else {
+                launch_gated_delta_net<true, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+                    S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
+            }
         } else {
-            launch_gated_delta_net<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
-                S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-                sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
+            if (keep_rs) {
+                launch_gated_delta_net<false, true>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+                    S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
+            } else {
+                launch_gated_delta_net<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+                    S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                    sb1, sb2, sb3, neqk1, rq3, scale, K, stream);
+            }
         }
     }
 }
