@@ -320,6 +320,7 @@ endif()
 add_test(NAME test-fattn-gdn-py
     COMMAND ${CMAKE_COMMAND} -E env
         PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}
+        python3
         ${CMAKE_CURRENT_SOURCE_DIR}/test-fattn-gdn.py
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )

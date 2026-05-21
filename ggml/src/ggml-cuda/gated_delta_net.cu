@@ -297,9 +297,15 @@ void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor *
 
     if (use_fattn) {
         // Flash attention implementation for gated delta net
-        ggml_cuda_fattn_gdn_impl<kda, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
-            S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
-            sb1, sb2, sb3, neqk1, rq3, K, stream);
+        if (kda) {
+            ggml_cuda_fattn_gdn_impl<true, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+                S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                sb1, sb2, sb3, neqk1, rq3, K, stream);
+        } else {
+            ggml_cuda_fattn_gdn_impl<false, false>(q_d, k_d, v_d, g_d, b_d, s_d, dst_d,
+                S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+                sb1, sb2, sb3, neqk1, rq3, K, stream);
+        }
     } else {
         // Standard gated delta net implementation (for state retention or small sequences)
         if (kda) {

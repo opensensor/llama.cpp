@@ -3,35 +3,35 @@
 // Flash attention for gated delta net (linear attention layers in Qwen3Next)
 // This provides optimized flash attention for the recurrent attention mechanism
 
-template <int S_v, bool KDA, bool keep_rs_t>
+template <int DV, bool KDA, bool keep_rs_t, int ncols2>
 static void ggml_cuda_fattn_gdn_f32_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const ggml_tensor * Q = dst->src[0];
 
-    // Use smaller ncols2 for linear attention
-    const int ncols2 = 1;
+    // ncols2 is passed as a template parameter (8, 4, 2, or 1)
+    // It determines which case threshold to use for Q->ne[1] comparison
 
     if constexpr (ncols2 <= 8) {
         if (turing_mma_available(cc) && Q->ne[1] <= 8/ncols2) {
-            ggml_cuda_fattn_gdn_f32_case<16, S_v, 8/ncols2, ncols2>(ctx, dst);
+            ggml_cuda_fattn_gdn_f32_case<16, DV, 8/ncols2, ncols2>(ctx, dst);
             return;
         }
     }
 
     if constexpr (ncols2 <= 16) {
         if (Q->ne[1] <= 16/ncols2) {
-            ggml_cuda_fattn_gdn_f32_case<32, S_v, 16/ncols2, ncols2>(ctx, dst);
+            ggml_cuda_fattn_gdn_f32_case<32, DV, 16/ncols2, ncols2>(ctx, dst);
             return;
         }
     }
 
     if (Q->ne[1] <= 32/ncols2 || (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_TURING) ||
-            (GGML_CUDA_CC_IS_AMD(cc) && S_v > 256)) {
-        ggml_cuda_fattn_gdn_f32_case<64, S_v, 32/ncols2, ncols2>(ctx, dst);
+            (GGML_CUDA_CC_IS_AMD(cc) && DV > 256)) {
+        ggml_cuda_fattn_gdn_f32_case<64, DV, 32/ncols2, ncols2>(ctx, dst);
         return;
     }
 
-    ggml_cuda_fattn_gdn_f32_case<128, S_v, 64/ncols2, ncols2>(ctx, dst);
+    ggml_cuda_fattn_gdn_f32_case<128, DV, 64/ncols2, ncols2>(ctx, dst);
 }
 
 template <int DV, bool KDA, bool keep_rs_t>
@@ -49,21 +49,21 @@ static void ggml_cuda_fattn_gdn_f32_switch_ncols2(ggml_backend_cuda_context & ct
     const int gqa_ratio = Q->ne[2] / K->ne[2];
 
     if (use_gqa_opt && gqa_ratio > 4) {
-        ggml_cuda_fattn_gdn_f32_switch_ncols1<KDA, keep_rs_t, 8>(ctx, dst);
+        ggml_cuda_fattn_gdn_f32_switch_ncols1<DV, KDA, keep_rs_t, 8>(ctx, dst);
         return;
     }
 
     if (use_gqa_opt && gqa_ratio > 2) {
-        ggml_cuda_fattn_gdn_f32_switch_ncols1<KDA, keep_rs_t, 4>(ctx, dst);
+        ggml_cuda_fattn_gdn_f32_switch_ncols1<DV, KDA, keep_rs_t, 4>(ctx, dst);
         return;
     }
 
     if (use_gqa_opt && gqa_ratio % 2 == 0) {
-        ggml_cuda_fattn_gdn_f32_switch_ncols1<KDA, keep_rs_t, 2>(ctx, dst);
+        ggml_cuda_fattn_gdn_f32_switch_ncols1<DV, KDA, keep_rs_t, 2>(ctx, dst);
         return;
     }
 
-    ggml_cuda_fattn_gdn_f32_switch_ncols1<KDA, keep_rs_t, 1>(ctx, dst);
+    ggml_cuda_fattn_gdn_f32_switch_ncols1<DV, KDA, keep_rs_t, 1>(ctx, dst);
 }
 
 void ggml_cuda_op_fattn_gdn(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

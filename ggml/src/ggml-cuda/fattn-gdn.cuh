@@ -61,7 +61,8 @@ static __device__ void ggml_cuda_fattn_gdn_attn_f32(
 }
 
 template <int S_v, bool KDA, bool keep_rs_t>
-static __device__ void ggml_cuda_fattn_gdn_f32(
+static __global__ void __launch_bounds__((ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v) * 4, 2)
+ggml_cuda_fattn_gdn_f32(
     const float * q,
     const float * k,
     const float * v,
@@ -81,16 +82,16 @@ static __device__ void ggml_cuda_fattn_gdn_f32(
     int64_t       sb1,
     int64_t       sb2,
     int64_t       sb3,
-    int64_t       neqk1,
-    int64_t       rq3,
+    const uint3   neqk1_magic,
+    const uint3   rq3_magic,
     int           K) {
     const uint32_t h_idx    = blockIdx.x;
     const uint32_t sequence = blockIdx.y;
     const int      lane     = threadIdx.x;
     const int      col      = blockIdx.z * blockDim.y + threadIdx.y;
 
-    const uint32_t iq1 = fastdiv(h_idx, neqk1);
-    const uint32_t iq3 = fastdiv(sequence, rq3);
+    const uint32_t iq1 = fastmodulo(h_idx, neqk1_magic);
+    const uint32_t iq3 = fastdiv(sequence, rq3_magic);
 
     const int64_t attn_score_elems = S_v * H * n_tokens * n_seqs;
     float *       attn_data        = dst;
@@ -103,9 +104,17 @@ static __device__ void ggml_cuda_fattn_gdn_f32(
     curr_state += state_in_offset + col * S_v;
     attn_data += (sequence * n_tokens * H + h_idx) * S_v;
 
-    constexpr int warp_size = 32;
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v;
+    static_assert(S_v % warp_size == 0, "S_v must be a multiple of warp_size");
     constexpr int rows_per_lane = (S_v + warp_size - 1) / warp_size;
     float         s_shard[rows_per_lane];
+
+    ggml_cuda_pdl_sync();
+#pragma unroll
+    for (int r = 0; r < rows_per_lane; r++) {
+        const int i = r * warp_size + lane;
+        s_shard[r]  = curr_state[i];
+    }
 
     const int shift = (int) n_tokens - K;
 
@@ -261,3 +270,42 @@ static void ggml_cuda_fattn_gdn_impl(
             break;
     }
 }
+
+// Forward declarations for switch functions (defined in fattn-gdn.cu)
+void ggml_cuda_op_fattn_gdn(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
+template <int DV, bool KDA, bool keep_rs_t>
+void ggml_cuda_fattn_gdn_f32_switch_ncols2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
+template <int DV, bool KDA, bool keep_rs_t, int ncols2>
+void ggml_cuda_fattn_gdn_f32_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
+template <int DKQ, int DV, int ncols2>
+void ggml_cuda_fattn_gdn_f32_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+
+    const bool kda = (dst->src[3]->ne[0] == DV);
+
+    if (kda) {
+        if (ncols2 == 1) {
+            ggml_cuda_fattn_gdn_f32_switch_ncols2<DV, true, true>(ctx, dst);
+        } else {
+            ggml_cuda_fattn_gdn_f32_switch_ncols2<DV, true, false>(ctx, dst);
+        }
+    } else {
+        if (ncols2 == 1) {
+            ggml_cuda_fattn_gdn_f32_switch_ncols2<DV, false, true>(ctx, dst);
+        } else {
+            ggml_cuda_fattn_gdn_f32_switch_ncols2<DV, false, false>(ctx, dst);
+        }
+    }
+}
+
+#define DECL_FATTN_GDN_CASE(DKQ, DV, ncols2)                              \
+    template void ggml_cuda_fattn_gdn_f32_case                            \
+    <DKQ, DV, ncols2>(ggml_backend_cuda_context & ctx, ggml_tensor * dst) \
+
+extern DECL_FATTN_GDN_CASE( 16,  16, 8);
+extern DECL_FATTN_GDN_CASE( 32,  32, 16);
+extern DECL_FATTN_GDN_CASE( 64,  64, 32);
+extern DECL_FATTN_GDN_CASE(128, 128, 64);
